@@ -228,6 +228,13 @@ class MidiGame(QWidget):
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowTransparentForInput)
         self.button.hide()
 
+    def enable_interaction(self):
+        """外部から呼び出してプレビュー解除＆操作可能にする"""
+        # on_start_break と同じ処理を実行
+        self.on_start_break()
+        # ウィンドウフラグの変更を反映させるには再表示が必要
+        self.show()
+
     def closeEvent(self,event):
         pygame.mixer.music.stop(); self.midi_out.close(); pygame.midi.quit()
         super().closeEvent(event)
