@@ -78,6 +78,7 @@ class MidiGame(QWidget):
             self.button.hide()
 
         # Score and judgement setup
+        self.score=0
         self.combo = 0
         self.max_combo = 0
         self.total_hits = 0
@@ -105,8 +106,14 @@ class MidiGame(QWidget):
         pygame.mixer.init()
         pygame.mixer.music.load(midi_path)
         pygame.mixer.music.play()
-        pygame.midi.init()
-        self.midi_out = pygame.midi.Output(0)
+        # MIDI 出力初期化（失敗しても落ちないように例外キャッチ）
+        try:
+            pygame.midi.init()
+            default_id = pygame.midi.get_default_output_id()
+            self.midi_out = pygame.midi.Output(default_id)
+        except Exception as e:
+            print("MIDI output init failed:", e)
+            self.midi_out = None
 
         # MIDI data & notes
         self.midi_data = mido.MidiFile(midi_path)
@@ -155,12 +162,17 @@ class MidiGame(QWidget):
             self.notes.append(item)
 
     def play_midi(self):
-        for msg in self.midi_data.play():
-            if not msg.is_meta:
-                data=msg.bytes()
-                if len(data)>=3:
-                    self.midi_out.write_short(data[0],data[1],data[2])
-            time.sleep(msg.time)
+         for msg in self.midi_data.play():
+             if msg.type in ('note_on','note_off'):
+                self.midi_out.write_short(msg.type=='note_on' and 0x90 or 0x80,
+                                          msg.note, msg.velocity)
+                if self.midi_out:
+                    try:
+                        status = 0x90 if msg.type=='note_on' else 0x80
+                        self.midi_out.write_short(status, msg.note, msg.velocity)
+                    except Exception:
+                        pass
+             time.sleep(msg.time)
 
     def update_game(self):
         current=time.time()-self.start_time
@@ -193,31 +205,33 @@ class MidiGame(QWidget):
         col=mapping[event.key()]
         current=time.time()-self.start_time
         result="Miss"
+        # その列のノーツを探す
         for note in self.notes:
-            if not note.hit and note.column==col:
-                diff=note.start_time-current
-                if abs(diff)<0.1:
-                    result="Just"
-                elif abs(diff)<0.2:
-                    result="Good"
-                else:
-                    continue
-                note.hit=True;note.setBrush(QBrush(QColor(0,255,0)))
-                self.midi_out.write_short(0x90,note.note,note.velocity)
-                QTimer.singleShot(200,lambda n=note: self.midi_out.write_short(0x80,n.note,n.velocity))
-                break
-        if result=="Just":
-            self.combo+=1;self.just_hits+=1;self.total_hits+=1
-        elif result=="Good":
-            self.combo+=1;self.good_hits+=1;self.total_hits+=1
-        else:
-            self.combo=0
+            if note.column != col or note.hit:
+                continue
+            # ノーツのY位置と判定ラインY位置の差で判定
+            note_y = note.y()
+            delta = abs(note_y - self.judge_line_y)
+            # ピクセル差 thresholds
+            if delta < 10:           # ±10px以内 → Just
+                note.hit = True
+                note.setVisible(False)
+                self.combo += 1
+                self.just_hits += 1
+            elif delta < 30:         # ±30px以内 → Good
+                note.hit = True
+                note.setVisible(False)
+                self.combo += 1
+                self.good_hits += 1
+            else:
+                # 範囲外なら次のノーツへ
+                continue
         self.max_combo=max(self.max_combo,self.combo)
-        color=QColor(0,255,0) if result=="Just" else QColor(255,255,0) if result=="Good" else QColor(255,0,0)
-        text_item=self.scene.addText(result,QFont('Arial',20))
-        text_item.setDefaultTextColor(color)
-        x=50+col*100; text_item.setPos(x,self.judge_line_y-40)
-        self.judgements.append((text_item,time.time()))
+        #color=QColor(0,255,0) if result=="Just" else QColor(255,255,0) if result=="Good" else QColor(255,0,0)
+        #text_item=self.scene.addText(result,QFont('Arial',20))
+        #text_item.setDefaultTextColor(color)
+        #x=50+col*100; text_item.setPos(x,self.judge_line_y-40)
+        # self.judgements.append((text_item,time.time()))
 
     def on_start_break(self):
         # Exit preview mode: opaque & block clicks
