@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QVBoxLay
 from PyQt5.QtCore import Qt, QTimer
 from qt_midi_game import MidiGame
 from PyQt5.QtCore import Qt
+from qt_tetris_game import TetrisGame
 
 
 class PomodoroGameLauncher(QWidget):
@@ -29,11 +30,9 @@ class PomodoroGameLauncher(QWidget):
     def setup_session(self):
         # 0) モード選択
         mode, ok_mode = QInputDialog.getItem(
-            self, "モード選択", "休憩に何をしたい？",
-            ["音楽ゲーム", "スクリプト実行", "アプリケーション実行"],
-            0,               # 初期選択インデックス
-            False,           # 編集不可
-            Qt.WindowStaysOnTopHint
+            self, "モード選択", "休憩後に何をしたい？",
+            ["音楽ゲーム", "テトリス", "スクリプト実行", "EXE実行"],
+            0, False, Qt.WindowStaysOnTopHint
         )
         if not ok_mode:
             return
@@ -73,6 +72,9 @@ class PomodoroGameLauncher(QWidget):
             else:
                 return
             finish_cb = self.start_game_preview
+        elif self.mode == "テトリス":
+            # no file to choose
+            finish_cb = self.start_tetris
         elif self.mode == "スクリプト実行":
             dlg = QFileDialog(self, "実行する Python スクリプトを選択")
             dlg.setNameFilter("Python Files (*.py)")
@@ -111,11 +113,28 @@ class PomodoroGameLauncher(QWidget):
 
         self.break_button_win = BreakButtonWindow(self.start_break_timer)
         self.break_button_win.show()
+        
+    def start_tetris(self):
+        """作業終了後：テトリスのプレビューを出す"""
+       
+        # 半透明プレビューで立ち上げ
+        self.tetris_window = TetrisGame(preview_mode=True)
+        self.tetris_window.show()
+        # 休憩開始ボタンを出す
+        self.break_button_win = BreakButtonWindow(self.start_break_timer)
+        self.break_button_win.show()
+
+    # start_break_timer の中では既存の enable_interaction を呼んでいるので
+    # テトリスも同様に操作可能になります
+
 
     def start_break_timer(self):
        # プレビュー解除（操作可能に）
         if hasattr(self, 'game_window'):
             self.game_window.enable_interaction()
+        if hasattr(self, 'tetris_window'):
+        # TetrisGame に追加した enable_interaction を呼ぶ
+            self.tetris_window.enable_interaction()
         # 休憩タイマー開始 → 終了時に on_break_end を呼び出す
         self.timer_win = TimerWindow(self.rest_duration, self.on_break_end)
         self.timer_win.show()
@@ -241,6 +260,7 @@ class BreakButtonWindow(QWidget):
         # ボタン作成＆サイズ固定
         self.button = QPushButton('休憩を開始する', self)
         self.button.clicked.connect(start_break_callback)
+        self.button.clicked.connect(self.close)
         self.button.resize(150, 50)
         self.setFixedSize(self.button.size())
         # 画面の右上へ移動
@@ -255,7 +275,6 @@ class BreakButtonWindow(QWidget):
         self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.WindowTitleHint)
         self.resize(200, 100)
         layout = QVBoxLayout()
-
         self.button = QPushButton("休憩を開始する", self)
         self.button.clicked.connect(self.start_break)
         layout.addWidget(self.button)
