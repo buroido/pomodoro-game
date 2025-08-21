@@ -142,7 +142,28 @@ class TetrisGame(QWidget):
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self.game_loop)
         self.timer.start(500)
-    
+        
+    def _focus_game_window(self):
+            """ウィンドウを最前面にしてキーフォーカスを自分に固定"""
+            # QGraphicsView にフォーカスが残っていると奪われやすいので消しておく
+            if hasattr(self, "view"):
+                self.view.clearFocus()
+
+            self.raise_()
+            self.activateWindow()
+            self.setFocus(Qt.ActiveWindowFocusReason)
+
+            # OS側の取りこぼし対策で少し遅延してもう一度フォーカス
+            QTimer.singleShot(0,  lambda: (self.raise_(), self.activateWindow(), self.setFocus(Qt.ActiveWindowFocusReason)))
+            QTimer.singleShot(120, lambda: (self.raise_(), self.activateWindow(), self.setFocus(Qt.ActiveWindowFocusReason)))
+
+            # それでも不安定ならキーボードを一時的に握る（不要ならコメントアウトでOK）
+            # try:
+            #     self.grabKeyboard()
+            #     QTimer.singleShot(500, self.releaseKeyboard)  # 0.5秒で解放
+            # except Exception:
+            #     pass
+        
     def get_drop_interval(self):
         # レベルごとに落下速度アップ
         base = 500  # 初期500ms
@@ -152,10 +173,29 @@ class TetrisGame(QWidget):
 
 
     def _init_game(self):
+        self.game_over = False             # ← 追加
+        self.go_text_item = None 
         self.board = [[0]*MAX_COL for _ in range(MAX_ROW)]
         self.record = Record()
         self.current = Block(random.randint(2, 8))
         self.next_block = Block(random.randint(2, 8))
+        
+    def _trigger_game_over(self):
+        if self.game_over:
+            return
+        self.game_over = True
+        self.timer.stop()
+        # ハイスコア更新
+        if self.record.score > self.highscore:
+            self.highscore = self.record.score
+            with open(HIGH_SCORE_FILE, 'w') as f:
+                f.write(str(self.highscore))
+        # GAME OVER を重ねて表示（以降 render() で消されない）
+        self.go_text_item = self.scene.addText("GAME OVER", QFont(None, 48))
+        self.go_text_item.setDefaultTextColor(QColor(255, 0, 0))
+        gw, gh = self.scene.width(), self.scene.height()
+        self.go_text_item.setPos(50, gh/2 - 50)
+
 
     def game_loop(self):
         if self.current._moveable(self.board, [1, 0]):
@@ -179,17 +219,12 @@ class TetrisGame(QWidget):
                 rr = self.current.row + r
                 cc = self.current.col + c
                 if 0 <= rr < MAX_ROW and 0 <= cc < MAX_COL and self.board[rr][cc] != 0:
-                    self.timer.stop()
+                    self._trigger_game_over()  
                     # ハイスコア更新
                     if self.record.score > self.highscore:
                         self.highscore = self.record.score
                         with open(HIGH_SCORE_FILE, 'w') as f:
                             f.write(str(self.highscore))
-                    go = self.scene.addText("GAME OVER", QFont(None, 48))
-                    go.setDefaultTextColor(QColor(255, 0, 0))
-                    gw = self.scene.width()
-                    gh = self.scene.height()
-                    go.setPos(gw/2 - 100, gh/2 - 50)
                     return
             self.next_block = Block(random.randint(2, 8))
         self.render()
@@ -203,6 +238,8 @@ class TetrisGame(QWidget):
         return lines
 
     def render(self):
+        if self.game_over:        # ← 追加
+            return
         self.scene.clear()
         # ● ここでグリッド線を描画 ●
         pen = QPen(QColor(100, 100, 100))
@@ -260,6 +297,8 @@ class TetrisGame(QWidget):
         
 
     def keyPressEvent(self, e):
+        if self.game_over:        # ← 追加
+            return
         key = e.key()
         if key == Qt.Key_Left and self.current._moveable(self.board, [0, -1]):
             self.current.col -= 1
@@ -284,7 +323,9 @@ class TetrisGame(QWidget):
             Qt.WindowCloseButtonHint
         )
         self.show()  # フラグ変更を反映
+        self._focus_game_window() 
 
     def enable_interaction(self):
         self.on_start_break()
         self.show()
+        self._focus_game_window() 
