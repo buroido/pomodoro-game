@@ -11,6 +11,8 @@ CELL_SIZE = 35
 GRID_OFFSET_X = 30
 GRID_OFFSET_Y = 30
 HIGH_SCORE_FILE = "tetris_highscore.txt"
+CLEAR_LINES = 40   # ← 40ラインでクリア
+
 
 class Block:
     shapes = [
@@ -175,6 +177,8 @@ class TetrisGame(QWidget):
     def _init_game(self):
         self.game_over = False             # ← 追加
         self.go_text_item = None 
+        self.game_clear = False
+        self.clear_text_item = None   
         self.board = [[0]*MAX_COL for _ in range(MAX_ROW)]
         self.record = Record()
         self.current = Block(random.randint(2, 8))
@@ -195,6 +199,22 @@ class TetrisGame(QWidget):
         self.go_text_item.setDefaultTextColor(QColor(255, 0, 0))
         gw, gh = self.scene.width(), self.scene.height()
         self.go_text_item.setPos(50, gh/2 - 50)
+    def _trigger_game_clear(self):
+        if self.game_clear:
+            return
+        self.game_clear = True
+        self.timer.stop()
+        # ハイスコア更新
+        if self.record.score > self.highscore:
+            self.highscore = self.record.score
+            with open(HIGH_SCORE_FILE, 'w') as f:
+                f.write(str(self.highscore))
+        # クリア表示
+        self.clear_text_item = self.scene.addText("GAME CLEAR", QFont(None, 48))
+        self.clear_text_item.setDefaultTextColor(QColor(0, 180, 0))
+        gw, gh = self.scene.width(), self.scene.height()
+        self.clear_text_item.setPos(50, gh/2 - 50)
+
 
 
     def game_loop(self):
@@ -213,18 +233,24 @@ class TetrisGame(QWidget):
             # レベルアップがあればタイマー再設定
             if self.record.level > old_level:
                 self.timer.start(self.get_drop_interval())
+            
+            # ★ ここでクリア判定（40ライン到達）
+            if self.record.cleared >= CLEAR_LINES:
+                self._trigger_game_clear()
+                return
             self.current = self.next_block
+            
             # ゲームオーバー判定
             for r, c in self.current.shape:
                 rr = self.current.row + r
                 cc = self.current.col + c
                 if 0 <= rr < MAX_ROW and 0 <= cc < MAX_COL and self.board[rr][cc] != 0:
                     self._trigger_game_over()  
-                    # ハイスコア更新
-                    if self.record.score > self.highscore:
-                        self.highscore = self.record.score
-                        with open(HIGH_SCORE_FILE, 'w') as f:
-                            f.write(str(self.highscore))
+                    # # ハイスコア更新
+                    # if self.record.score > self.highscore:
+                    #     self.highscore = self.record.score
+                    #     with open(HIGH_SCORE_FILE, 'w') as f:
+                    #         f.write(str(self.highscore))
                     return
             self.next_block = Block(random.randint(2, 8))
         self.render()
@@ -238,7 +264,7 @@ class TetrisGame(QWidget):
         return lines
 
     def render(self):
-        if self.game_over:        # ← 追加
+        if self.game_over or self.game_clear:   # ← 修正
             return
         self.scene.clear()
         # ● ここでグリッド線を描画 ●
@@ -297,7 +323,7 @@ class TetrisGame(QWidget):
         
 
     def keyPressEvent(self, e):
-        if self.game_over:        # ← 追加
+        if self.game_over or self.game_clear:   # ← 修正
             return
         key = e.key()
         if key == Qt.Key_Left and self.current._moveable(self.board, [0, -1]):
