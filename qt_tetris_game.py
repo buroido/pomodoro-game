@@ -31,13 +31,63 @@ class Block:
         self.shape = [coord.copy() for coord in self.shapes[block_type]]
         self.row = 1
         self.col = 5
+        
+    # ゲームクラス内（__init__の下あたり）に追加
+    def set_click_through(self, on: bool):
+        # 上位ウィンドウ
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, on)
+        # 子のView/Viewportも透過
+        if hasattr(self, "view"):
+            self.view.setAttribute(Qt.WA_TransparentForMouseEvents, on)
+            if self.view.viewport() is not None:
+                self.view.viewport().setAttribute(Qt.WA_TransparentForMouseEvents, on)
+
+        # トップレベルのウィンドウフラグ
+        f = self.windowFlags()
+        if on:
+            f |= Qt.FramelessWindowHint | Qt.WindowTransparentForInput
+            f &= ~Qt.WindowStaysOnTopHint
+        else:
+            f &= ~Qt.WindowTransparentForInput
+            # ここはお好みで。作業中は普通のWindowに戻す想定
+            f |= Qt.Window
+        self.setWindowFlags(f)
+
+        # フラグ反映（全画面のままならshowFullScreen、そうでなければshow）
+        if self.isFullScreen():
+            self.showFullScreen()
+        else:
+            self.show()
+
+        # show後にもう一度“念押し”で適用（ハンドル再生成対策）
+        QTimer.singleShot(0, lambda: self.setWindowFlags(self.windowFlags() | (Qt.WindowTransparentForInput if on else Qt.Widget)))
+
+
+    def _win_set_extransparent(widget):
+        # Windows専用：WS_EX_LAYERED | WS_EX_TRANSPARENT
+        try:
+            import ctypes, sys
+            if sys.platform != "win32":
+                return
+            hwnd = int(widget.winId())
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            user32 = ctypes.windll.user32
+            get = user32.GetWindowLongW
+            setl = user32.SetWindowLongW
+            style = get(hwnd, GWL_EXSTYLE)
+            setl(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+        except Exception:
+            pass
+
 
     def _moveable(self, board, direction):
         drow, dcol = direction
         for r, c in self.shape:
             nr = self.row + r + drow
             nc = self.col + c + dcol
-            if not (0 <= nc < MAX_COL and nr < MAX_ROW) or board[nr][nc] != 0:
+            if not (0 <= nc < MAX_COL and 0<= nr < MAX_ROW) or board[nr][nc] != 0:
                 return False
         return True
     # qt_tetris_game.py の Block クラス内に追加
@@ -110,23 +160,23 @@ class TetrisGame(QWidget):
             except Exception:
                 self.highscore = 0
         # 常に最前面＋枠なし
+               # ウィンドウフラグ
         base_flags = Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint
-        # プレビュー時は入力透過（マウス＋キーボード）にする
-        if preview_mode:
-            preview_flags = base_flags | Qt.WindowTransparentForInput
-            self.setWindowFlags(self.windowFlags() | preview_flags)
-            # 半透明に
-            self.setWindowOpacity(0.5)
-        else:
-            # 通常モード（枠なし＋最前面）
-            self.setWindowFlags(self.windowFlags() | base_flags)
+        # if preview_mode:
+        #     self.setWindowFlags(self.windowFlags() | base_flags | Qt.WindowTransparentForInput)
+        #     self.setWindowOpacity(0.5)
+        # else:
+        #     self.setWindowFlags(self.windowFlags() | base_flags)
+
         self.setFocusPolicy(Qt.StrongFocus)
 
         width = GRID_OFFSET_X*2 + MAX_COL*CELL_SIZE + 300
         height = GRID_OFFSET_Y*2 + MAX_ROW*CELL_SIZE
         self.scene = QGraphicsScene(0, 0, width, height)
         self.view = QGraphicsView(self.scene, self)
-        self.view.setGeometry(0, 0, width, height)
+        #self.view.setGeometry(0, 0, width, height)
+        #self.view.setAlignment(Qt.AlignCenter)   # ← 追加：内容を中央に配置
+
         # ── ここから追加 ──
         # 矢印キーで View がスクロールしないように
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -135,8 +185,15 @@ class TetrisGame(QWidget):
         self.view.setFocusPolicy(Qt.NoFocus)
         # このウィジェットがキー入力を受け取るように
         self.setFocusPolicy(Qt.StrongFocus)
+        self._view_w, self._view_h = width, height
         self.setFocus()
         # ── ここまで追加 ─
+        # TetrisGame.__init__ の末尾（self.timer.start(500) の後など）で一度呼んでおく
+            # フルスクリーンは view 作成後に
+        self.showFullScreen()
+        QTimer.singleShot(0, self._center_view)  # 表示直後にフィット
+
+
 
         self._init_game()
 
@@ -144,6 +201,24 @@ class TetrisGame(QWidget):
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self.game_loop)
         self.timer.start(500)
+        
+    def _center_view(self):
+        # 親ウィンドウ（フルスクリーン）の中央に従来サイズの view を置く
+        x = max(0, (self.width()  - self._view_w) // 2)
+        y = max(0, (self.height() - self._view_h) // 2)
+        self.view.setGeometry(x, y, self._view_w, self._view_h)
+
+        
+    
+    def _fit_view(self):
+        self.view.setSceneRect(0, 0, self.scene.width(), self.scene.height())
+        self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._center_view()
+
+
         
     def _focus_game_window(self):
             """ウィンドウを最前面にしてキーフォーカスを自分に固定"""
@@ -308,18 +383,18 @@ class TetrisGame(QWidget):
         # スコア表示
         text = self.scene.addText(f"SCORE: {self.record.score}", QFont(None, 16))
         text.setDefaultTextColor(QColor(0, 0, 0))
-        text.setPos(self.scene.width() - 200, GRID_OFFSET_Y)
+        text.setPos(self.scene.width() - 300, GRID_OFFSET_Y)
          # ライン数表示
         text_lines = self.scene.addText(f"LINES: {self.record.cleared}", QFont(None, 16))
         text_lines.setDefaultTextColor(QColor(0,0,0))
-        text_lines.setPos(self.scene.width() - 200, GRID_OFFSET_Y + 30)
+        text_lines.setPos(self.scene.width() - 300, GRID_OFFSET_Y + 30)
         # ハイスコア表示
         text_high = self.scene.addText(f"HIGH: {self.highscore}", QFont(None, 16))
         text_high.setDefaultTextColor(QColor(0,0,0))
-        text_high.setPos(self.scene.width() - 200, y0 + 60)
+        text_high.setPos(self.scene.width() - 300, y0 + 60)
         text_level = self.scene.addText(f"LEVEL: {self.record.level}", QFont(None,16))
         text_level.setDefaultTextColor(QColor(0,0,0))
-        text_level.setPos(self.scene.width() - 200, y0 + 90)
+        text_level.setPos(self.scene.width() - 300, y0 + 90)
         
 
     def keyPressEvent(self, e):
@@ -337,21 +412,22 @@ class TetrisGame(QWidget):
         elif key == Qt.Key_Up:
             while self.current._moveable(self.board, [1, 0]):
                 self.current.row += 1
+            self.current.place(self.board)
+        elif key == Qt.Key_Down:
+            if self.current._moveable(self.board, [1, 0]):
+                self.current.row += 1
         self.render()
 
     def on_start_break(self):
-        # プレビュー解除：不透明に戻し、入力透過フラグを外す
+        # プレビュー解除：入力可に戻す
         self.setWindowOpacity(1.0)
-        # WindowTransparentForInput を外してキーボード／マウス受け付け
-        self.setWindowFlags(
-            Qt.WindowStaysOnTopHint |
-            Qt.WindowTitleHint |
-            Qt.WindowCloseButtonHint
-        )
-        self.show()  # フラグ変更を反映
-        self._focus_game_window() 
+        self.setWindowFlags(Qt.Window)  # 余計なフラグを外す
+        self.showFullScreen()           # ★ フルスクリーン
+        QTimer.singleShot(0, self._fit_view)
+        self._focus_game_window()
 
     def enable_interaction(self):
-        self.on_start_break()
-        self.show()
-        self._focus_game_window() 
+        #self.on_start_break()
+        # showFullScreen 内で可視化済み。念のためフォーカス固定
+        self._focus_game_window()
+

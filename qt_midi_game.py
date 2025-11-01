@@ -11,7 +11,7 @@ import pygame.midi
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QGraphicsView, QGraphicsScene, QGraphicsRectItem,
-    QPushButton, QFileDialog
+    QPushButton, QFileDialog,QVBoxLayout,QGraphicsLineItem
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QBrush, QColor, QFont, QPen
@@ -20,16 +20,35 @@ from PyQt5.QtGui import QBrush, QColor, QFont, QPen
 TEST_MIDI_PATH = r"C:\Users\tubasa usami\pythoncode\pomodoro\music\45秒で何ができる.mid"
 
 # ====== 表示系の定数 ======
-SCENE_W, SCENE_H = 700, 600
+# 先頭の定数を少し整理
+# ====== 表示系の定数（置き換え） ======
+FIELD_W, FIELD_H = 720, 960        # フィールドの論理サイズ（好きな比率でOK）
 LANES = 4
-LANE_W = SCENE_W / LANES
-JUDGE_Y = 500  # 判定ラインY
+LANE_W = FIELD_W / LANES
+JUDGE_Y = int(FIELD_H * 0.83)      # 判定ライン（下寄り）
 NOTE_W, NOTE_H = 100, 20
-NOTE_SPEED = 300.0  # px/sec
+NOTE_SPEED = 300.0
 JUST_PX = 10
 GOOD_PX = 30
-# 追加: 判定ライン到達までの移動時間（秒）
 AUDIO_DELAY = max((JUDGE_Y - NOTE_H/2) / NOTE_SPEED, 0.0)
+def _win_force_topmost(widget, on=True):
+    # モジュール内に小さなWin32ヘルパを持たせる
+    try:
+        import ctypes, sys
+        if sys.platform != "win32":
+            return
+        hwnd = int(widget.winId())
+        user32 = ctypes.windll.user32
+        SWP_NOMOVE=0x2; SWP_NOSIZE=0x1; SWP_NOACTIVATE=0x10; SWP_SHOWWINDOW=0x40
+        HWND_TOPMOST=-1; HWND_NOTOPMOST=-2
+        user32.SetWindowPos(
+            hwnd,
+            HWND_TOPMOST if on else HWND_NOTOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        )
+    except Exception:
+        pass
 
 
 class NoteItem(QGraphicsRectItem):
@@ -39,71 +58,78 @@ class NoteItem(QGraphicsRectItem):
         self.column = column          # 0..3
         self.hit = False
 
+from PyQt5.QtGui import QBrush, QColor, QFont, QPen, QPainter
+
 class MidiGame(QWidget):
-    """
-    Pygame版でのロジック（ノーツ生成/描画/判定）をPyQtへ移植。
-    - generate_notes(): 時間バケツで間引き
-    - _update_game(): 位置更新＆Miss処理
-    - keyPressEvent(): Just/Good/Miss 判定
-    """
-    def __init__(self, midi_path, preview_mode=False, difficulty="Easy"):
+    def __init__(self, midi_path, preview_mode=False, difficulty="Normal"):
         super().__init__()
         self.setWindowTitle("PyQt MIDI Game")
-        self.setFixedSize(SCENE_W, SCENE_H)
 
         self.preview_mode = preview_mode
-        self.difficulty = difficulty  # "Easy" | "Normal" | "Hard"
-        self.font = QFont("Arial", 14)
+        self.difficulty = difficulty
+        self.font = QFont("Arial", 18)
 
-        # Scene / View
-        self.scene = QGraphicsScene(0, 0, SCENE_W, SCENE_H)
+        # --- Scene / View ---
+        self.scene = QGraphicsScene(0, 0, FIELD_W, FIELD_H)
         self.view = QGraphicsView(self.scene, self)
-        self.view.setGeometry(0, 0, SCENE_W, SCENE_H)
+        self.view.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.view.setFocusPolicy(Qt.NoFocus)
         self.setFocusPolicy(Qt.StrongFocus)
+        self.view.setBackgroundBrush(QBrush(QColor(255, 255, 255)))  # ← 余白は白
+        self.view.setAlignment(Qt.AlignCenter)                       # ← 中央寄せ
+        self.view.setRenderHint(QPainter.Antialiasing, False)        # くっきり
+        
+            # ★ これを追加：ウィンドウいっぱいに View を広げる
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self.view)
 
-        # 判定ライン
-        pen = QPen(QColor(0, 0, 0))
-        pen.setWidth(2)
-        self.scene.addLine(0, JUDGE_Y, SCENE_W, JUDGE_Y, pen)
-        # レーン区切り
-        grid_pen = QPen(QColor(80, 80, 80))
+        # ここがポイント：フィールド用のルート
+        self.field_root = QGraphicsRectItem(0, 0, FIELD_W, FIELD_H)
+        self.field_root.setPen(QPen(Qt.NoPen))
+        self.field_root.setBrush(QBrush(QColor(255, 255, 255, 240)))  # 薄い白
+        self.scene.addItem(self.field_root)
+
+        # 判定ライン・レーン線（FIELD_H をフルに使う）
+        # 判定ライン・レーン線
+        pen = QPen(QColor(0, 0, 0)); pen.setWidth(2)
+        jl = self.scene.addLine(0, JUDGE_Y, FIELD_W, JUDGE_Y, pen)
+        jl.setParentItem(self.field_root)
+
+        grid_pen = QPen(QColor(80, 80, 80)); grid_pen.setWidth(1)
         for i in range(LANES + 1):
             x = i * LANE_W
-            self.scene.addLine(x, 0, x, SCENE_H, grid_pen)
+            gl = self.scene.addLine(x, 0, x, FIELD_H, grid_pen)
+            gl.setParentItem(self.field_root)
 
-        # スコア表示
-        self.combo = 0
-        self.just = 0
-        self.good = 0
-        self.miss = 0
+
+        # スコア UI（フィールド内の固定座標）
+        self.combo = 0; self.just = 0; self.good = 0; self.miss = 0
         self.text_combo = self.scene.addText("Combo: 0", self.font)
-        self.text_combo.setDefaultTextColor(QColor(255,255,255))
-        self.text_combo.setPos(10, 10)
+        self.text_combo.setDefaultTextColor(QColor(0,0,0))
+        self.text_combo.setPos(12, 12)
         self.text_just = self.scene.addText("Just: 0", self.font)
-        self.text_just.setDefaultTextColor(QColor(0,255,0))
-        self.text_just.setPos(10, 30)
+        self.text_just.setDefaultTextColor(QColor(0,170,0))
+        self.text_just.setPos(12, 44)
         self.text_good = self.scene.addText("Good: 0", self.font)
-        self.text_good.setDefaultTextColor(QColor(255,255,0))
-        self.text_good.setPos(10, 50)
+        self.text_good.setDefaultTextColor(QColor(220,180,0))
+        self.text_good.setPos(12, 76)
         self.text_miss = self.scene.addText("Miss: 0", self.font)
-        self.text_miss.setDefaultTextColor(QColor(255,0,0))
-        self.text_miss.setPos(10, 70)
+        self.text_miss.setDefaultTextColor(QColor(200,0,0))
+        self.text_miss.setPos(12, 108)
 
-        # 判定テキスト（短時間表示）
-        self.floating_texts = []  # [(QGraphicsTextItem, expire_epoch), ...]
+        self.floating_texts = []
 
-        # MIDI 読み込み（描画用と送出用を分ける）
+        # MIDI 読み込み・ノーツ作成（既存ロジックをそのまま）
         self.midi_for_gen = mido.MidiFile(midi_path)
         self.midi_for_play = mido.MidiFile(midi_path)
-
-        # ノーツ作成
-        self.notes = []  # [NoteItem ...]
+        self.notes = []
         self._prepare_notes()
 
-        # MIDI 出力（音）
+        # MIDI 出力（既存のまま）
         self.midi_out = None
         try:
             pygame.midi.init()
@@ -112,12 +138,7 @@ class MidiGame(QWidget):
         except Exception:
             self.midi_out = None
 
-        # 再生スレッド開始
-        self.start_time = time.time()
-        self.midi_thread = threading.Thread(target=self._play_midi_thread, daemon=True)
-        self.midi_thread.start()
-
-        # プレビュー時は透過＆クリック透過
+        # プレビュー時のフラグ（以前の通り）
         if preview_mode:
             flags = Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.WindowTransparentForInput
             self.setWindowFlags(flags)
@@ -126,49 +147,88 @@ class MidiGame(QWidget):
             self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
 
         # ゲームループ
+        self.start_time = time.time()
+        self.midi_thread = threading.Thread(target=self._play_midi_thread, daemon=True)
+        self.midi_thread.start()
+
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_game)
         self.timer.start(16)
 
-        self.show()
+        # 初回フィット（フルスクリーン後にも再フィットされるよう保険）
+        QTimer.singleShot(0, self._fit_view)
+        
+        # ゲームクラス内（__init__の下あたり）に追加
+    
+    def set_click_through(self, on: bool):
+        """プレビュー用：クリック透過の切替（TopMostは維持）"""
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, on)
+        f = self.windowFlags()
+        if on:
+            f |= Qt.FramelessWindowHint | Qt.WindowTransparentForInput | Qt.WindowStaysOnTopHint | Qt.Tool
+        else:
+            f &= ~Qt.WindowTransparentForInput
+            f &= ~Qt.FramelessWindowHint
+            f |= Qt.WindowStaysOnTopHint  # 解除後もTopMost維持
+        self.setWindowFlags(f)
+        self.show()               # フラグ反映
+        _win_force_topmost(self, True)
+        
+    # ここ“だけ”をフィット対象にする（周りは白余白）
+    def _fit_view(self):
+        # field_root の『シーン座標の矩形』を取得して fit
+        rect = self.field_root.mapRectToScene(self.field_root.rect())
+        self.view.setSceneRect(self.scene.sceneRect())
+        self.view.fitInView(rect, Qt.KeepAspectRatio)
+        self.view.setAlignment(Qt.AlignCenter)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_view()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # 表示直後に念押しで最前面へ
+        QTimer.singleShot(0, lambda: (_win_force_topmost(self, True), self.raise_()))
+        # 周期的に最前面へ（QGraphicsViewの再作成対策）
+        if not hasattr(self, "_ontop_timer"):
+            self._ontop_timer = QTimer(self)
+            self._ontop_timer.setTimerType(Qt.VeryCoarseTimer)
+            self._ontop_timer.timeout.connect(lambda: (_win_force_topmost(self, True), self.raise_()))
+            self._ontop_timer.start(700)  # テトリスより少し短い周期で上書き勝ち
+
+
 
     # ====== ノーツ生成（Pygame版の時間バケツ方式を移植） ======
     def _prepare_notes(self):
-        bucket = {"Easy": 0.3, "Normal": 0.15, "Hard": 0.1}.get(self.difficulty, 0.15)
-        # midoのplay()は秒ベースのデルタを出してくれるので、それを累積して絶対秒にする
-        times = []
-        t = 0.0
-        
+        bucket = {"Easy": 0.5, "Normal": 0.15, "Hard": 0.1}.get(self.difficulty, 0.15)
+        times, t = [], 0.0
         for msg in self.midi_for_gen:
             t += msg.time
             if msg.type == "note_on" and getattr(msg, "velocity", 0) > 0:
                 times.append(t)
 
-        # 時間バケツにまとめ、各バケツから1ノーツずつ抽出
+        from collections import defaultdict
+        import random
         buckets = defaultdict(list)
         for tt in times:
             key = round(tt / bucket) * bucket
             buckets[key].append(tt)
+        filtered_times = [random.choice(arr) for _, arr in sorted(buckets.items())]
 
-        filtered_times = []
-        for key, arr in sorted(buckets.items()):
-            filtered_times.append(random.choice(arr))
-
-        # レーン割り当て（直近2つと同じレーンは避ける）
         last = []
         for tt in filtered_times:
             candidates = list(range(LANES))
             if len(last) >= 2 and last[-1] == last[-2]:
-                # 直近2回と違うレーンを選ぶ
                 candidates = [c for c in candidates if c != last[-1]]
             col = random.choice(candidates)
             last.append(col)
-
             lane_x = col * LANE_W + LANE_W / 2
             note = NoteItem(tt, col, NOTE_W, NOTE_H)
             note.setBrush(QBrush(QColor(0, 204, 255)))
-            note.setPos(lane_x, -50)  # 初期は上部に置いておく
-            self.scene.addItem(note)
+            note.setPos(lane_x, -50)
+            note.setParentItem(self.field_root)  # ★ ここがポイント（相対座標に）
+            #self.scene.addItem(note)
             self.notes.append(note)
 
     # ====== MIDI送出（mido→pygame.midi） ======
@@ -198,7 +258,7 @@ class MidiGame(QWidget):
             y = (now - note.start_time) * NOTE_SPEED
             note.setY(y)
             # 画面下に抜けたらMISS
-            if y - NOTE_H/2 > SCENE_H:
+            if y - NOTE_H/2 > FIELD_H:
                 note.hit = True
                 note.setVisible(False)
                 self.miss += 1
@@ -266,9 +326,13 @@ class MidiGame(QWidget):
         x = col * LANE_W + LANE_W / 2
         titem = self.scene.addText(text, self.font)
         titem.setDefaultTextColor(color)
-        titem.setPos(x - 20, JUDGE_Y - 50)
+        titem.setPos(x - 24, JUDGE_Y - 48)
+        titem.setParentItem(self.field_root)   # ← 追加
         expire = time.time() + 0.25
         self.floating_texts.append((titem, expire))
+
+
+
 
     def _gc_floating_texts(self):
         now = time.time()
@@ -282,11 +346,14 @@ class MidiGame(QWidget):
 
     # ====== プレビュー解除（フォーカス確保含む） ======
     def enable_interaction(self):
-        self.preview_mode = False
-        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
-        self.setWindowOpacity(1.0)
-        self.show()
+        # self.preview_mode = False
+        # self.setWindowFlags( Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        # self.setWindowOpacity(1.0)
+        # self.showFullScreen()      # ★ フルスクリーン維持
+        QTimer.singleShot(0, self._fit_view)
         self._focus_game_window()
+        
+
 
     def _focus_game_window(self):
         self.view.clearFocus()
@@ -312,7 +379,13 @@ class MidiGame(QWidget):
                 pygame.midi.quit()
         except Exception:
             pass
+        try:
+            if hasattr(self, "_ontop_timer") and self._ontop_timer:
+                self._ontop_timer.stop()
+        except Exception:
+            pass
         super().closeEvent(e)
+  
 
 
 # =========================
