@@ -1,4 +1,4 @@
-# pomodoro-game
+# breakgate
 main.pyを実行したら、三つのモードが表示されます
 
 1.音楽ゲーム
